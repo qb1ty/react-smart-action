@@ -2,6 +2,17 @@
   "name": "react-smart-action",
   "private": false,
   "version": "0.0.1-release.1",
+  "license": "MIT",
+  "keywords": [
+    "react",
+    "react-19",
+    "optimistic-ui",
+    "use-optimistic",
+    "hooks",
+    "debounce",
+    "retry",
+    "async-actions"
+  ],
   "description": "Smart, lightweight, and resilient optimistic UI hooks for React 19",
   "type": "module",
   "files": [
