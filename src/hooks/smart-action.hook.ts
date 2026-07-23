@@ -31,62 +31,85 @@ export const useSmartAction =
             onSettled
         } = options
 
+        const [localState, setLocalState] = useState<State>(initialState)
+
+        useEffect(() => {
+            setLocalState(initialState)
+        }, [initialState])
+
         const [error, setError] = useState<Error | null>(null)
         const [attemptCount, setAttemptCount] = useState<number>(0)
-
         const [isPending, startTransition] = useTransition()
 
-        const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
         const isMountedRef = useRef<boolean>(true)
+        const actionIdRef = useRef<number>(0)
+        const cancelDebounceRef = useRef<(() => void) | null>(null)
 
         useEffect(() => {
             isMountedRef.current = true
 
             return () => {
                 isMountedRef.current = false
-                if (debounceTimerRef.current) {
-                    clearTimeout(debounceTimerRef.current)
+                if (cancelDebounceRef.current) {
+                    cancelDebounceRef.current()
                 }
             }
         }, [])
 
         const [optimisticState, setOptimisticState] = useOptimistic<State, ActionPayload<Payload>>(
-            initialState,
+            localState,
             (currentState, { payload }) => {
                 return optimisticUpdater ? optimisticUpdater(currentState, payload) : currentState
             }
         )
 
         const executeWithRetry = useCallback(
-            async (payload: Payload, currentAttempt = 0): Promise<void> => {
-                if (!isMountedRef.current) retries
+            async (payload: Payload): Promise<void> => {
+                if (!isMountedRef.current) return
 
-                setAttemptCount(currentAttempt + 1)
+                let currentAttempt = 0
 
                 try {
-                    const result = await action(payload)
+                    while (currentAttempt <= retries) {
+                        if (!isMountedRef.current) return
 
-                    if (isMountedRef.current) {
-                        onSuccess?.(result, payload)
-                        setError(null)
+                        setAttemptCount(currentAttempt + 1)
+
+                        try {
+                            const result = await action(payload)
+
+                            if (isMountedRef.current) {
+                                onSuccess?.(result, payload)
+                                setError(null)
+                                if (optimisticUpdater) {
+                                    setLocalState(prev => optimisticUpdater(prev, payload))
+                                }
+                            }
+
+                            return
+                        } catch (err) {
+                            if (!isMountedRef.current) return
+
+                            const errorObj = err instanceof Error ? err : new Error(String(err))
+
+                            if (currentAttempt < retries) {
+                                currentAttempt++
+                                await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
+                                continue
+                            }
+
+                            setError(errorObj)
+                            onError?.(errorObj, payload)
+                            throw errorObj
+                        }
                     }
-                } catch (err) {
-                    const errorObj = err instanceof Error ? err : new Error(String(err))
-                    setError(errorObj)
-
-                    if (currentAttempt < retries) {
-                        await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
-                        return executeWithRetry(payload, currentAttempt + 1)
-                    }
-
-                    onError?.(errorObj, payload)
                 } finally {
-                    if (isMountedRef.current && currentAttempt === retries) {
+                    if (isMountedRef.current) {
                         onSettled?.()
                     }
                 }
             },
-            [action, retries, retryDelayMs, onSuccess, onError, onSettled]
+            [action, retries, retryDelayMs, onSuccess, onError, onSettled, optimisticUpdater]
         )
 
         const clearError = useCallback(() => {
@@ -97,22 +120,36 @@ export const useSmartAction =
             (payload: Payload) => {
                 setError(null)
 
-                if (debounceTimerRef.current) {
-                    clearTimeout(debounceTimerRef.current)
+                if (cancelDebounceRef.current) {
+                    cancelDebounceRef.current()
                 }
+
+                const currentId = ++actionIdRef.current
 
                 startTransition(async () => {
                     setOptimisticState({ payload })
 
                     if (debounceMs > 0) {
                         await new Promise<void>((resolve) => {
-                            debounceTimerRef.current = setTimeout(() => {
+                            const timer = setTimeout(() => {
+                                cancelDebounceRef.current = null
                                 resolve()
                             }, debounceMs)
+
+                            cancelDebounceRef.current = () => {
+                                clearTimeout(timer)
+                                resolve()
+                            }
                         })
                     }
 
-                    await executeWithRetry(payload, 0)
+                    if (currentId !== actionIdRef.current) {
+                        return
+                    }
+
+                    try {
+                        await executeWithRetry(payload)
+                    } catch {}
                 })
             },
             [debounceMs, executeWithRetry, setOptimisticState]
