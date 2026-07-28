@@ -2,6 +2,14 @@
   "name": "react-smart-action",
   "private": false,
   "version": "0.0.2-release.2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qb1ty/react-smart-action"
+  },
+  "bugs": {
+    "url": "https://github.com/qb1ty/react-smart-action/issues"
+  },
+  "homepage": "https://github.com/qb1ty/react-smart-action#readme",
   "license": "MIT",
   "keywords": [
     "react",
