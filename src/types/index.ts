@@ -1,3 +1,5 @@
+export * from "./offline-mutation-db.types"
+export * from "./offline-mutation.types"
 export * from "./optimistic-list.types"
 export * from "./optimistic-toggle.types"
 export * from "./smart-action.types" 
