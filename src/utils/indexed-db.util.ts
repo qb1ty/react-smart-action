@@ -4,10 +4,34 @@ const DB_NAME = "react-smart-action-db"
 const STORE_NAME = "offline-mutation"
 const DB_VERSION = 1
 
+let dbInstance: IDBDatabase | null = null
+
 /**
- * Проверка на доступность браузерного окружения (защита от падений в SSR / NextJs)
+ * Динамический геттер для IndexedDB.
+ * Позволяет безопасно работать в браузере (window),
+ * обходить ошибки в SSR, ISR, SSG (Next Js) и корректно цеплять полифилы в тестах (globalThis).
  */
-const isBrowser = typeof window !== "undefined" && typeof window.indexedDB !== "undefined"
+export const getIDB = (): IDBFactory | null => {
+    if (typeof window !== "undefined" && window.indexedDB) {
+        return window.indexedDB
+    }
+
+    if (typeof globalThis !== "undefined" && globalThis.indexedDB) {
+        return globalThis.indexedDB
+    }
+
+    return null
+}
+
+/**
+ * Принудительное закрытие соединения.
+ */
+export const closeDB = (): void => {
+    if (dbInstance) {
+        dbInstance.close()
+        dbInstance = null
+    }
+}
 
 /**
  * Инициализирует подключения к IndexedDB.
@@ -18,24 +42,42 @@ const isBrowser = typeof window !== "undefined" && typeof window.indexedDB !== "
  */
 export const initDB = (): Promise<IDBDatabase> => {
     return new Promise((resolve, reject) => {
-        if (!isBrowser) {
+        if (dbInstance) {
+            return resolve(dbInstance)
+        }
+
+        const idb = getIDB()
+
+        if (!idb) {
             return reject(new Error("IndexedDB is not available in this environment."))
         }
 
-        const request = window.indexedDB.open(DB_NAME, DB_VERSION)
+        const request = idb.open(DB_NAME, DB_VERSION)
 
         request.onerror = () => reject(request.error)
 
-        request.onsuccess = () => resolve(request.result)
+        request.onsuccess = () => {
+            dbInstance = request.result
+
+            dbInstance.onclose = () => {
+                dbInstance = null
+            }
+
+            dbInstance.onversionchange = () => {
+                dbInstance?.close()
+                dbInstance = null
+            }
+
+            resolve(dbInstance)
+        }
 
         request.onupgradeneeded = (event) => {
             const db = (event.target as IDBOpenDBRequest).result
 
             if (!db.objectStoreNames.contains(STORE_NAME)) {
                 const store = db.createObjectStore(STORE_NAME, { keyPath: "id" })
-                /** Индекс для быстрого поиска задач по конкретной очереди */
+
                 store.createIndex("mutationKey", "mutationKey", { unique: false })
-                /** Индекс для сортировки по времени (FIFO) */
                 store.createIndex("timestamp", "timestamp", { unique: false })
             }
         }
@@ -88,7 +130,7 @@ export const withStore = async <T>(
 export const getQueue = async <Payload>(
     mutationKey: string  
 ): Promise<QueueItem<Payload>[]> => {
-    if (!isBrowser) return []
+    if (!getIDB()) return []
 
     return withStore<QueueItem<Payload>[]>("readonly", (store, setResult) => {
         const index = store.index("mutationKey")
@@ -114,7 +156,7 @@ export const pushToQueue = async <Payload>(
     item: QueueItem<Payload>,
     squash?: (prevPayload: Payload, nextPayload: Payload) => boolean
 ) => {
-    if (!isBrowser) return
+    if (!getIDB()) return
 
     return withStore<void>("readwrite", (store) => {
         if (!squash) {
@@ -163,7 +205,7 @@ export const updatedTask = async <Payload>(
     id: string,
     updates: Partial<QueueItem<Payload>>
 ): Promise<void> => {
-    if (!isBrowser) return
+    if (!getIDB()) return
 
     return withStore<void>("readwrite", (store, _, reject) => {
         const getReq = store.get(id)
@@ -187,7 +229,7 @@ export const updatedTask = async <Payload>(
  * @returns {Promise<void>} Promise, который resolve после успешного удаления записи.
  */
 export const removeTask = async (id: string): Promise<void> => {
-    if (!isBrowser) return
+    if (!getIDB()) return
 
     return withStore<void>("readwrite", (store) => {
         store.delete(id)
@@ -202,7 +244,7 @@ export const removeTask = async (id: string): Promise<void> => {
  * @returns {Promise<void>} Promise, который resolve после удаления всех связанных записей.
  */
 export const clearQueue = async (mutationKey: string): Promise<void> => {
-    if (!isBrowser) return
+    if (!getIDB()) return
 
     return withStore<void>("readwrite", (store) => {
         const index = store.index("mutationKey")
